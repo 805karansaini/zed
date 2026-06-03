@@ -2,6 +2,9 @@ name: Codex macOS Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/commit-view-split-diff
 
 jobs:
   build-macos-aarch64:
