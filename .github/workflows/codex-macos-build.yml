@@ -37,21 +37,64 @@ jobs:
       - name: Install CMake
         run: brew install cmake
 
+      - name: Install Cargo Bundle
+        run: |
+          cargo install cargo-bundle \
+            --git https://github.com/zed-industries/cargo-bundle.git \
+            --branch zed-deploy
+
       - name: Build debug app bundle
         run: |
-          set +e
-          ./script/bundle-mac -d aarch64-apple-darwin
-          status=$?
-          app_path="target/aarch64-apple-darwin/debug/bundle/osx/Zed Dev.app"
-          if [ -d "$app_path" ]; then
-            echo "Debug app bundle exists at $app_path"
-            exit 0
+          set -euo pipefail
+
+          target_triple="aarch64-apple-darwin"
+          channel="$(cat crates/zed/RELEASE_CHANNEL)"
+
+          script/generate-licenses
+          rustup target add "$target_triple"
+
+          cargo build --package zed --package cli --target "$target_triple"
+
+          pushd crates/zed
+          cp Cargo.toml Cargo.toml.backup
+          sed -i.backup "s/package.metadata.bundle-${channel}/package.metadata.bundle/" Cargo.toml
+          app_path="$(cargo bundle --target "$target_triple" --select-workspace-root | xargs)"
+          mv Cargo.toml.backup Cargo.toml
+          popd
+
+          cp "target/${target_triple}/debug/zed" "${app_path}/Contents/MacOS/zed"
+          cp "target/${target_triple}/debug/cli" "${app_path}/Contents/MacOS/cli"
+
+          mkdir -p "${app_path}/Contents/Frameworks"
+          tmp_dir="$(mktemp -d)"
+          curl --silent --fail --location \
+            "https://github.com/desktop/dugite-native/releases/download/v2.43.3/dugite-native-v2.43.3-fa29823-macOS-arm64.tar.gz" \
+            | tar -xz -C "$tmp_dir" -f - bin/git
+          mv "${tmp_dir}/bin/git" "${app_path}/Contents/MacOS/git"
+          rm -rf "$tmp_dir"
+
+          document_icon_source="crates/zed/resources/Document.icns"
+          document_icon_target="${app_path}/Contents/Resources/Document.icns"
+          if [[ -f "${document_icon_source}" ]]; then
+            mkdir -p "$(dirname "${document_icon_target}")"
+            cp "${document_icon_source}" "${document_icon_target}"
           fi
-          exit "$status"
+
+          cp "crates/zed/contents/${channel}/embedded.provisionprofile" "${app_path}/Contents/"
+          cat crates/zed/resources/zed.entitlements \
+            | sed '/com.apple.developer.associated-domains/,+1d' \
+            > "${app_path}/Contents/Resources/zed.entitlements"
+          codesign --force --deep \
+            --entitlements "${app_path}/Contents/Resources/zed.entitlements" \
+            --sign - \
+            "${app_path}" \
+            -v
+
+          ditto -c -k --keepParent "${app_path}" target/Zed-debug-aarch64-app.zip
 
       - name: Upload app bundle
         uses: actions/upload-artifact@v4
         with:
           name: Zed-debug-aarch64-app
-          path: target/aarch64-apple-darwin/debug/bundle/osx/*.app
+          path: target/Zed-debug-aarch64-app.zip
           if-no-files-found: error
