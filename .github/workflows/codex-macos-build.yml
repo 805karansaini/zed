@@ -1,0 +1,33 @@
+name: Codex macOS Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos-aarch64:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install CMake
+        run: brew install cmake
+
+      - name: Build debug app bundle
+        run: ./script/bundle-mac -d aarch64-apple-darwin
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-debug-aarch64-app
+          path: target/aarch64-apple-darwin/debug/bundle/osx/*.app
+          if-no-files-found: error
