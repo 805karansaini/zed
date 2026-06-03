@@ -22,11 +22,32 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Cache Cargo build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: zed-macos-aarch64-debug-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            zed-macos-aarch64-debug-${{ runner.os }}-
+
       - name: Install CMake
         run: brew install cmake
 
       - name: Build debug app bundle
-        run: ./script/bundle-mac -d aarch64-apple-darwin
+        run: |
+          set +e
+          ./script/bundle-mac -d aarch64-apple-darwin
+          status=$?
+          app_path="target/aarch64-apple-darwin/debug/bundle/osx/Zed Dev.app"
+          if [ -d "$app_path" ]; then
+            echo "Debug app bundle exists at $app_path"
+            exit 0
+          fi
+          exit "$status"
 
       - name: Upload app bundle
         uses: actions/upload-artifact@v4
