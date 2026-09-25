@@ -9671,7 +9671,12 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .child(
-                        h_flex()
+                        div()
+                            .flex()
+                            .flex_row()
+                            // `h_flex` would center children vertically; the workspace area
+                            // has no intrinsic height and must stretch to fill the window.
+                            .items_stretch()
                             .flex_1()
                             .w_full()
                             .min_h_0()
@@ -15826,6 +15831,7 @@ mod tests {
     #[gpui::test]
     async fn test_flexible_dock_sizing(cx: &mut gpui::TestAppContext) {
         init_test(cx);
+        disable_activity_bar(cx);
         let fs = FakeFs::new(cx.executor());
 
         let project = Project::test(fs, [], cx).await;
@@ -16372,6 +16378,7 @@ mod tests {
     #[gpui::test]
     async fn test_flexible_panel_left_dock_sizing(cx: &mut gpui::TestAppContext) {
         init_test(cx);
+        disable_activity_bar(cx);
         let fs = FakeFs::new(cx.executor());
 
         let project = Project::test(fs, [], cx).await;
@@ -19289,6 +19296,45 @@ mod tests {
                     .map(|path| path.path.display(PathStyle::local()).into_owned())
             })
             .collect()
+    }
+
+    /// Dock sizing tests assign `workspace.bounds` directly and expect it to match
+    /// the window width, which only holds when the activity bar isn't rendered.
+    fn disable_activity_bar(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.activity_bar = Some(false);
+                });
+            });
+        });
+    }
+
+    #[gpui::test]
+    async fn test_activity_bar_keeps_workspace_full_height(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+        let window_size = gpui::size(px(1200.), px(800.));
+        cx.simulate_resize(window_size);
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(WorkspaceSettings::get_global(cx).activity_bar);
+            let bounds = workspace.bounds;
+            assert!(
+                bounds.size.height > window_size.height / 2.,
+                "workspace area collapsed next to the activity bar: {bounds:?}"
+            );
+            assert!(
+                bounds.origin.x >= dock::ACTIVITY_BAR_WIDTH,
+                "workspace area should start after the activity bar: {bounds:?}"
+            );
+        });
     }
 
     pub fn init_test(cx: &mut TestAppContext) {

@@ -4,7 +4,7 @@
   "author": "Colors from Microsoft's VS Code Dark Modern and Light Modern themes",
   "themes": [
     {
-      "name": "VS Code Dark Modern",
+      "name": "VSCode Dark Modern",
       "appearance": "dark",
       "style": {
         "accents": [
@@ -430,7 +430,7 @@
       }
     },
     {
-      "name": "VS Code Light Modern",
+      "name": "VSCode Light Modern",
       "appearance": "light",
       "style": {
         "accents": [

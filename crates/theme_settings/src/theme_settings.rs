@@ -445,3 +445,37 @@ pub fn increase_buffer_font_size(cx: &mut App) {
 pub fn decrease_buffer_font_size(cx: &mut App) {
     adjust_buffer_font_size(cx, |size| size - px(1.0));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `load_bundled_themes` only logs themes that fail to parse, so a broken
+    // bundled theme would silently disappear from the theme picker.
+    #[test]
+    fn test_bundled_themes_parse() {
+        let themes_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/themes");
+        let mut theme_names = Vec::new();
+        for family_dir in std::fs::read_dir(&themes_dir).unwrap() {
+            let family_dir = family_dir.unwrap().path();
+            if !family_dir.is_dir() {
+                continue;
+            }
+            for file in std::fs::read_dir(&family_dir).unwrap() {
+                let path = file.unwrap().path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+                {
+                    let bytes = std::fs::read(&path).unwrap();
+                    let family: ThemeFamilyContent = serde_json::from_slice(&bytes)
+                        .unwrap_or_else(|error| panic!("failed to parse {path:?}: {error}"));
+                    theme_names.extend(family.themes.into_iter().map(|theme| theme.name));
+                }
+            }
+        }
+        assert!(theme_names.iter().any(|name| name == "VSCode Dark Modern"));
+        assert!(theme_names.iter().any(|name| name == "VSCode Light Modern"));
+    }
+}

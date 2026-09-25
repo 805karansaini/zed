@@ -1958,12 +1958,34 @@ mod tests {
         assert_eq!(permissions.default, ToolPermissionMode::Deny);
     }
 
+    /// This fork defaults to the classic (editor) layout; these tests exercise the
+    /// upstream defaults, where the agent is docked left and the other panels right.
+    fn use_agentic_default_layout(cx: &mut App) {
+        let mut defaults: serde_json::Value =
+            settings::parse_json_with_comments(settings::test_settings()).unwrap();
+        for (key, dock) in [
+            ("agent", "left"),
+            ("project_panel", "right"),
+            ("outline_panel", "right"),
+            ("collaboration_panel", "right"),
+            ("git_panel", "right"),
+        ] {
+            defaults[key]["dock"] = serde_json::json!(dock);
+        }
+        SettingsStore::update_global(cx, |store, cx| {
+            store
+                .set_default_settings(&defaults.to_string(), cx)
+                .unwrap();
+        });
+    }
+
     #[gpui::test]
     fn test_get_layout(cx: &mut gpui::App) {
         let store = SettingsStore::test(cx);
         cx.set_global(store);
         project::DisableAiSettings::register(cx);
         AgentSettings::register(cx);
+        use_agentic_default_layout(cx);
 
         // Should be Agent with an empty user layout (user hasn't customized).
         let layout = AgentSettings::get_layout(cx);
@@ -2096,6 +2118,7 @@ mod tests {
             cx.set_global(store);
             project::DisableAiSettings::register(cx);
             AgentSettings::register(cx);
+            use_agentic_default_layout(cx);
 
             // User has agent=left (matches preset) and project_panel=left (does not)
             SettingsStore::update_global(cx, |store, cx| {

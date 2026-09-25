@@ -6651,8 +6651,13 @@ impl GitPanel {
                             .child(
                                 h_flex()
                                     .w_full()
-                                    .when(self.commit_editor_expanded, |this| this.flex_1())
-                                    .items_start()
+                                    .map(|this| {
+                                        if self.commit_editor_expanded {
+                                            this.flex_1().min_h_0().items_stretch()
+                                        } else {
+                                            this.items_start()
+                                        }
+                                    })
                                     .child(
                                         div()
                                             .pt_1p5()
@@ -9938,6 +9943,7 @@ mod tests {
                 git_panel.entry_primary_click_action = Some(GitPanelClickBehavior::ProjectDiff);
                 git_panel.file_icons = Some(false);
                 git_panel.status_style = Some(StatusStyle::Icon);
+                git_panel.dock = Some(settings::DockPosition::Right);
             });
             cx.set_global(settings_store);
             theme_settings::init(LoadThemes::JustBase, cx);

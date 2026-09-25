@@ -1605,7 +1605,7 @@ impl StatusItemView for PanelButtons {
     }
 }
 
-const ACTIVITY_BAR_WIDTH: Pixels = px(44.);
+pub(crate) const ACTIVITY_BAR_WIDTH: Pixels = px(44.);
 
 /// A VS Code-style column of buttons at the left edge of the window that
 /// toggles the panels in the left dock and opens project search.
