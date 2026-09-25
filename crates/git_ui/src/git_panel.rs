@@ -2696,6 +2696,117 @@ impl GitPanel {
             });
     }
 
+    /// Discards every change in a section: unstaged changes for "Changes", and
+    /// all changes to tracked files for "Tracked".
+    fn discard_section(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repository) = self.active_repository.clone() else {
+            return;
+        };
+        let header = GitHeaderEntry { header: section };
+        let entries = {
+            let repository = repository.read(cx);
+            self.change_entries_by_path()
+                .filter(|entry| header.contains(entry, repository))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        match section {
+            Section::Unstaged => self.discard_unstaged_changes(entries, window, cx),
+            Section::Tracked => self.revert_entries(entries, false, window, cx),
+            Section::Conflict | Section::New | Section::Staged => {}
+        }
+    }
+
+    /// Restores files to their staged contents, so staged changes are kept and only
+    /// the unstaged ones are lost. Untracked files are moved to the trash.
+    fn discard_unstaged_changes(
+        &mut self,
+        entries: Vec<GitStatusEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if entries.is_empty() {
+            return;
+        }
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+        let workspace = self.workspace.clone();
+        let total_count = entries.len();
+        let (untracked, tracked): (Vec<_>, Vec<_>) = entries
+            .into_iter()
+            .partition(|entry| entry.status.is_untracked());
+
+        let mut details = tracked
+            .iter()
+            .chain(&untracked)
+            .filter_map(|entry| entry.repo_path.as_ref().file_name())
+            .map(|file_name| file_name.to_string())
+            .take(5)
+            .join("\n");
+        if total_count > 5 {
+            details.push_str(&format!("\nand {} more…", total_count - 5));
+        }
+        let (message, confirm_label) = if tracked.is_empty() {
+            ("Trash these untracked files?", "Trash")
+        } else if untracked.is_empty() {
+            (
+                "Discard unstaged changes to these files?",
+                "Discard Changes",
+            )
+        } else {
+            (
+                "Discard unstaged changes and trash untracked files?",
+                "Discard Changes",
+            )
+        };
+        let prompt = window.prompt(
+            PromptLevel::Warning,
+            message,
+            Some(&details),
+            &[confirm_label, "Cancel"],
+            cx,
+        );
+        let prompt = cx.background_spawn(prompt);
+
+        window
+            .spawn(cx, async move |cx| {
+                if prompt.await? != 0 {
+                    return anyhow::Ok(());
+                }
+
+                if !tracked.is_empty() {
+                    let paths = tracked.into_iter().map(|entry| entry.repo_path).collect();
+                    active_repository
+                        .update(cx, |repository, cx| {
+                            repository.restore_files_from_index(paths, cx)
+                        })
+                        .await?;
+                }
+
+                let trash_tasks = workspace.update(cx, |workspace, cx| {
+                    untracked
+                        .iter()
+                        .filter_map(|entry| {
+                            workspace.project().update(cx, |project, cx| {
+                                let project_path = active_repository
+                                    .read(cx)
+                                    .repo_path_to_project_path(&entry.repo_path, cx)?;
+                                project.trash_file(project_path, cx)
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })?;
+                for task in trash_tasks {
+                    task.await?;
+                }
+                Ok(())
+            })
+            .detach_and_prompt_err("Failed to discard changes", window, cx, |error, _, _| {
+                Some(format!("{error}"))
+            });
+    }
+
     fn add_to_gitignore(
         &mut self,
         _: &git::AddToGitignore,
@@ -8071,19 +8182,20 @@ impl GitPanel {
                                                 IconName::Undo,
                                             )
                                             .icon_size(IconSize::Small)
-                                            .tooltip(Tooltip::for_action_title(
-                                                "Discard All Tracked Changes",
-                                                &RestoreTrackedFiles,
+                                            .tooltip(Tooltip::text(
+                                                if section == Section::Unstaged {
+                                                    "Discard All Unstaged Changes"
+                                                } else {
+                                                    "Discard All Changes"
+                                                },
                                             ))
                                             .on_click(
-                                                cx.listener(|this, _: &ClickEvent, window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.restore_tracked_files(
-                                                        &RestoreTrackedFiles,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }),
+                                                cx.listener(
+                                                    move |this, _: &ClickEvent, window, cx| {
+                                                        cx.stop_propagation();
+                                                        this.discard_section(section, window, cx);
+                                                    },
+                                                ),
                                             ),
                                         )
                                     },
@@ -8564,15 +8676,36 @@ impl GitPanel {
                         this.child(
                             IconButton::new(("discard-changes", ix), IconName::Undo)
                                 .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::for_action_title(
-                                    "Discard Changes",
-                                    &git::RestoreFile::default(),
-                                ))
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.clear_marks_and_select(ix, cx);
-                                    this.revert_selected(&git::RestoreFile::default(), window, cx);
-                                })),
+                                .map(|button| {
+                                    if section == Some(Section::Unstaged) {
+                                        button.tooltip(Tooltip::text("Discard Unstaged Changes"))
+                                    } else {
+                                        button.tooltip(Tooltip::for_action_title(
+                                            "Discard Changes",
+                                            &git::RestoreFile::default(),
+                                        ))
+                                    }
+                                })
+                                .on_click({
+                                    let entry = entry.clone();
+                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        this.clear_marks_and_select(ix, cx);
+                                        if section == Some(Section::Unstaged) {
+                                            this.discard_unstaged_changes(
+                                                vec![entry.clone()],
+                                                window,
+                                                cx,
+                                            );
+                                        } else {
+                                            this.revert_selected(
+                                                &git::RestoreFile::default(),
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    })
+                                }),
                         )
                     })
                     .child(

@@ -1256,6 +1256,8 @@ pub(crate) struct PanelGitGraph {
     workspace: WeakEntity<Workspace>,
     graph_data: GraphData,
     load_error: Option<SharedString>,
+    is_loading: bool,
+    needs_fetch: bool,
     scroll_handle: UniformListScrollHandle,
     selected_index: Option<usize>,
     _subscriptions: [Subscription; 2],
@@ -1277,6 +1279,8 @@ impl PanelGitGraph {
             workspace,
             graph_data: GraphData::new(accent_colors_count(cx.theme().accents())),
             load_error: None,
+            is_loading: true,
+            needs_fetch: true,
             scroll_handle: UniformListScrollHandle::new(),
             selected_index: None,
             _subscriptions: subscriptions,
@@ -1307,6 +1311,7 @@ impl PanelGitGraph {
                 if repository.read(cx).scan_id > 1 {
                     self.graph_data.clear();
                     self.selected_index = None;
+                    self.needs_fetch = true;
                     cx.notify();
                 }
             }
@@ -1317,21 +1322,30 @@ impl PanelGitGraph {
     fn fetch_commits(&mut self, repository: &Entity<Repository>, cx: &mut Context<Self>) {
         let loaded_count = self.graph_data.commits.len();
         let graph_data = &mut self.graph_data;
-        let load_error = repository.update(cx, |repository, cx| {
+        let (commits_changed, is_loading, load_error) = repository.update(cx, |repository, cx| {
             let response =
                 repository.graph_data(LogSource::All, LogOrder::DateOrder, 0..usize::MAX, cx);
-            if response.commits.len() < loaded_count {
+            let commits_changed = if response.commits.len() < loaded_count {
                 graph_data.clear();
                 graph_data.add_commits(response.commits);
+                true
             } else if let Some(new_commits) = response.commits.get(loaded_count..)
                 && !new_commits.is_empty()
             {
                 graph_data.add_commits(new_commits);
-            }
-            response.error
+                true
+            } else {
+                false
+            };
+            (commits_changed, response.is_loading, response.error)
         });
-        self.load_error = load_error;
-        cx.notify();
+        // Only re-render on real changes: rendering can trigger a fetch, so an
+        // unconditional notify would redraw forever while the log is empty.
+        if commits_changed || is_loading != self.is_loading || load_error != self.load_error {
+            self.is_loading = is_loading;
+            self.load_error = load_error;
+            cx.notify();
+        }
     }
 
     fn open_commit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1510,9 +1524,10 @@ impl PanelGitGraph {
 
 impl Render for PanelGitGraph {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.graph_data.commits.is_empty()
+        if self.needs_fetch
             && let Some(repository) = self.repository.upgrade()
         {
+            self.needs_fetch = false;
             self.fetch_commits(&repository, cx);
         }
 
@@ -1558,7 +1573,14 @@ impl Render for PanelGitGraph {
             h_flex()
                 .flex_1()
                 .justify_center()
-                .child(Label::new("No commits yet").color(Color::Muted))
+                .child(
+                    Label::new(if self.is_loading {
+                        "Loading Commits…"
+                    } else {
+                        "No commits yet"
+                    })
+                    .color(Color::Muted),
+                )
                 .into_any_element()
         } else {
             uniform_list(

@@ -1602,8 +1602,15 @@ impl GitRepository for RealGitRepository {
                 return Ok(());
             }
 
+            // An empty commit restores the paths from the index (`git checkout -- <paths>`),
+            // which discards unstaged changes but keeps staged ones.
+            let args: &[&str] = if commit.is_empty() {
+                &["checkout", "--"]
+            } else {
+                &["checkout", &commit, "--"]
+            };
             let output = git
-                .build_command(&["checkout", &commit, "--"])
+                .build_command(args)
                 .envs(env.iter())
                 .args(paths.iter().map(|path| path.as_unix_str()))
                 .output()
@@ -4451,6 +4458,44 @@ mod tests {
         assert_same_path(
             original_repo_path_from_common_dir(&repository.common_dir).unwrap(),
             repo_dir.path(),
+        );
+    }
+
+    #[gpui::test]
+    async fn test_checkout_files_with_empty_commit_keeps_staged_changes(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        git_init_repo(repo_dir.path());
+        let file_path = repo_dir.path().join("file.txt");
+        fs::write(&file_path, "committed\n").unwrap();
+        git_command(repo_dir.path(), ["add", "file.txt"]);
+        git_command(repo_dir.path(), ["commit", "-m", "initial"]);
+        fs::write(&file_path, "staged\n").unwrap();
+        git_command(repo_dir.path(), ["add", "file.txt"]);
+        fs::write(&file_path, "unstaged\n").unwrap();
+
+        let repository = RealGitRepository::new(
+            &repo_dir.path().join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+        repository
+            .checkout_files(
+                String::new(),
+                vec![RepoPath::new("file.txt").unwrap()],
+                Arc::new(HashMap::default()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "staged\n");
+        assert_eq!(
+            git_command_output(repo_dir.path(), ["show", ":file.txt"]),
+            "staged"
         );
     }
 

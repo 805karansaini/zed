@@ -7113,6 +7113,16 @@ impl Repository {
         )
     }
 
+    /// Restores the working tree copies of `paths` from the index, discarding their
+    /// unstaged changes while keeping staged ones.
+    pub fn restore_files_from_index(
+        &mut self,
+        paths: Vec<RepoPath>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.checkout_files("", paths, cx)
+    }
+
     pub fn reset(
         &mut self,
         commit: String,
