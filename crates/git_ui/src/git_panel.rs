@@ -39,7 +39,7 @@ use git::repository::{
     get_git_committer,
 };
 use git::stash::GitStash;
-use git::status::{DiffStat, StageStatus};
+use git::status::{DiffStat, StageStatus, StatusCode, TrackedStatus};
 use git::{
     Amend, Commit, Signoff, SkipHooks, ToggleStaged, repository::RepoPath, status::FileStatus,
 };
@@ -2050,6 +2050,9 @@ impl GitPanel {
             return;
         }
         if self.active_tab == GitPanelTab::Graph {
+            if let Some(panel_graph) = &self.panel_graph {
+                panel_graph.update(cx, |panel_graph, cx| panel_graph.select_previous(cx));
+            }
             return;
         }
 
@@ -2132,6 +2135,9 @@ impl GitPanel {
             return;
         }
         if self.active_tab == GitPanelTab::Graph {
+            if let Some(panel_graph) = &self.panel_graph {
+                panel_graph.update(cx, |panel_graph, cx| panel_graph.select_next(cx));
+            }
             return;
         }
 
@@ -2386,6 +2392,9 @@ impl GitPanel {
             return;
         }
         if self.active_tab == GitPanelTab::Graph {
+            if let Some(panel_graph) = &self.panel_graph {
+                panel_graph.update(cx, |panel_graph, cx| panel_graph.open_selected(window, cx));
+            }
             return;
         }
         if let Some(GitListEntry::Directory(dir_entry)) = self
@@ -2765,9 +2774,18 @@ impl GitPanel {
         };
         let workspace = self.workspace.clone();
         let total_count = entries.len();
-        let (untracked, tracked): (Vec<_>, Vec<_>) = entries
-            .into_iter()
-            .partition(|entry| entry.status.is_untracked());
+        // A file missing from the index (untracked, or a staged deletion recreated on
+        // disk) has no staged version to restore, so discarding it means trashing it.
+        let (untracked, tracked): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| {
+            entry.status.is_untracked()
+                || matches!(
+                    entry.status,
+                    FileStatus::Tracked(TrackedStatus {
+                        index_status: StatusCode::Deleted,
+                        ..
+                    })
+                )
+        });
 
         let mut details = tracked
             .iter()
@@ -2805,6 +2823,7 @@ impl GitPanel {
             cx.background_spawn(prompt)
         };
 
+        let this = cx.weak_entity();
         window
             .spawn(cx, async move |cx| {
                 if prompt.await? != 0 {
@@ -2812,12 +2831,9 @@ impl GitPanel {
                 }
 
                 if !tracked.is_empty() {
-                    let paths = tracked.into_iter().map(|entry| entry.repo_path).collect();
-                    active_repository
-                        .update(cx, |repository, cx| {
-                            repository.restore_files_from_index(paths, cx)
-                        })
-                        .await?;
+                    this.update_in(cx, |this, window, cx| {
+                        this.checkout_entries(tracked, true, window, cx);
+                    })?;
                 }
 
                 let trash_tasks = workspace.update(cx, |workspace, cx| {
@@ -2972,6 +2988,19 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.checkout_entries(entries, false, window, cx);
+    }
+
+    /// Checks files out from HEAD, or from the index when `from_index` is set, then
+    /// reloads any open buffers with unsaved edits so the discarded text doesn't
+    /// linger in an editor and get saved back.
+    fn checkout_entries(
+        &mut self,
+        entries: Vec<GitStatusEntry>,
+        from_index: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let workspace = self.workspace.clone();
         let Some(active_repository) = self.active_repository.clone() else {
             return;
@@ -2996,14 +3025,15 @@ impl GitPanel {
 
             this.update_in(cx, |this, window, cx| {
                 let task = active_repository.update(cx, |repo, cx| {
-                    repo.checkout_files(
-                        "HEAD",
-                        entries
-                            .into_iter()
-                            .map(|entries| entries.repo_path)
-                            .collect(),
-                        cx,
-                    )
+                    let paths = entries
+                        .into_iter()
+                        .map(|entries| entries.repo_path)
+                        .collect();
+                    if from_index {
+                        repo.restore_files_from_index(paths, cx)
+                    } else {
+                        repo.checkout_files("HEAD", paths, cx)
+                    }
                 });
                 this.update_visible_entries(window, cx);
                 cx.notify();
@@ -14207,6 +14237,33 @@ mod tests {
     async fn setup_partially_staged_panel(
         cx: &mut TestAppContext,
     ) -> (Arc<FakeFs>, Entity<GitPanel>, VisualTestContext) {
+        setup_staging_panel(
+            cx,
+            json!({
+                ".git": {},
+                "menu.txt": "menu unstaged\n",
+                "keyboard.txt": "keyboard unstaged\n",
+            }),
+            &[
+                ("menu.txt", "menu committed\n".into()),
+                ("keyboard.txt", "keyboard committed\n".into()),
+            ],
+            &[
+                ("menu.txt", "menu staged\n".into()),
+                ("keyboard.txt", "keyboard staged\n".into()),
+            ],
+        )
+        .await
+    }
+
+    /// A panel grouped by staging state over `/project`, with the given worktree,
+    /// HEAD and index contents.
+    async fn setup_staging_panel(
+        cx: &mut TestAppContext,
+        tree: serde_json::Value,
+        head: &[(&str, String)],
+        index: &[(&str, String)],
+    ) -> (Arc<FakeFs>, Entity<GitPanel>, VisualTestContext) {
         cx.update(|cx| {
             SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings(cx, |settings| {
@@ -14217,31 +14274,10 @@ mod tests {
         });
 
         let fs = FakeFs::new(cx.background_executor.clone());
-        fs.insert_tree(
-            path!("/project"),
-            json!({
-                ".git": {},
-                "menu.txt": "menu unstaged\n",
-                "keyboard.txt": "keyboard unstaged\n",
-            }),
-        )
-        .await;
+        fs.insert_tree(path!("/project"), tree).await;
         let dot_git = Path::new(path!("/project/.git"));
-        fs.set_head_for_repo(
-            dot_git,
-            &[
-                ("menu.txt", "menu committed\n".into()),
-                ("keyboard.txt", "keyboard committed\n".into()),
-            ],
-            "0123456789abcdef0123456789abcdef01234567",
-        );
-        fs.set_index_for_repo(
-            dot_git,
-            &[
-                ("menu.txt", "menu staged\n".into()),
-                ("keyboard.txt", "keyboard staged\n".into()),
-            ],
-        );
+        fs.set_head_for_repo(dot_git, head, "0123456789abcdef0123456789abcdef01234567");
+        fs.set_index_for_repo(dot_git, index);
 
         let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
         let window_handle =
@@ -14355,6 +14391,82 @@ mod tests {
 
         assert_discarded_unstaged_only(&fs, "keyboard.txt").await;
         assert_discarded_unstaged_only(&fs, "menu.txt").await;
+    }
+
+    #[gpui::test]
+    async fn test_discard_in_changes_reloads_unsaved_buffer(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (fs, panel, mut cx) = setup_partially_staged_panel(cx).await;
+        let project = panel.read_with(&cx, |panel, _| panel.project.clone());
+
+        let buffer = project
+            .update(&mut cx, |project, cx| {
+                project.open_local_buffer(path!("/project/menu.txt"), cx)
+            })
+            .await
+            .unwrap();
+        buffer.update(&mut cx, |buffer, cx| {
+            buffer.edit([(0..0, "unsaved edit\n")], None, cx);
+            assert!(buffer.is_dirty());
+        });
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.clear_marks_and_select(unstaged_entry_index(panel, "menu.txt"), cx);
+            panel.revert_selected(&git::RestoreFile { skip_prompt: true }, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_discarded_unstaged_only(&fs, "menu.txt").await;
+        buffer.read_with(&cx, |buffer, _| {
+            assert_eq!(buffer.text(), "menu staged\n");
+            assert!(
+                !buffer.is_dirty(),
+                "discarded edits must not stay in the buffer"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_discard_all_changes_with_recreated_staged_deletion(cx: &mut TestAppContext) {
+        init_test(cx);
+        // `recreated.txt` was deleted in the index and then recreated on disk, so it has
+        // no staged version to restore.
+        let (fs, panel, mut cx) = setup_staging_panel(
+            cx,
+            json!({
+                ".git": {},
+                "menu.txt": "menu unstaged\n",
+                "recreated.txt": "recreated\n",
+            }),
+            &[
+                ("menu.txt", "menu committed\n".into()),
+                ("recreated.txt", "committed\n".into()),
+            ],
+            &[("menu.txt", "menu staged\n".into())],
+        )
+        .await;
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.discard_section(Section::Unstaged, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt(), "discarding should ask first");
+        cx.simulate_prompt_answer("Discard Changes");
+        cx.run_until_parked();
+
+        assert_discarded_unstaged_only(&fs, "menu.txt").await;
+        assert!(
+            !fs.is_file(Path::new(path!("/project/recreated.txt"))).await,
+            "a recreated file with a staged deletion should be trashed",
+        );
+        let index = fs
+            .with_git_state(Path::new(path!("/project/.git")), false, |state| {
+                state
+                    .index_contents
+                    .contains_key(&repo_path("recreated.txt"))
+            })
+            .unwrap();
+        assert!(!index, "the staged deletion must be kept");
     }
 
     #[gpui::test]

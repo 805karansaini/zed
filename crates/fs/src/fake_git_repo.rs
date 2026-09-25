@@ -480,52 +480,39 @@ impl GitRepository for FakeGitRepository {
         // commit (`git checkout -- <paths>`) restores from the index and leaves it alone.
         let from_index = commit.is_empty();
         let contents = self.with_state_async(!from_index, move |state| {
-            if from_index {
-                return Ok(paths
-                    .into_iter()
-                    .map(|path| {
-                        let content = state.index_contents.get(&path).cloned();
-                        (path, content)
-                    })
-                    .collect::<Vec<_>>());
-            }
-            if commit != "HEAD" {
+            if commit != "HEAD" && !from_index {
                 bail!("fake checkout_files only supports the index and HEAD, got {commit}");
             }
-            Ok(paths
+            let source = if from_index {
+                &state.index_contents
+            } else {
+                &state.head_contents
+            };
+            // Like git, fail the whole checkout if any path is missing from the source.
+            let contents = paths
                 .into_iter()
                 .map(|path| {
-                    let content = state.head_contents.get(&path).cloned();
-                    match &content {
-                        Some(content) => {
-                            state.index_contents.insert(path.clone(), content.clone());
-                        }
-                        None => {
-                            state.index_contents.remove(&path);
-                        }
-                    }
-                    (path, content)
+                    let content = source.get(&path).cloned().with_context(|| {
+                        format!(
+                            "error: pathspec '{}' did not match any file(s) known to git",
+                            path.as_unix_str()
+                        )
+                    })?;
+                    Ok((path, content))
                 })
-                .collect::<Vec<_>>())
+                .collect::<Result<Vec<_>>>()?;
+            if !from_index {
+                for (path, content) in &contents {
+                    state.index_contents.insert(path.clone(), content.clone());
+                }
+            }
+            Ok(contents)
         });
         async move {
             let working_directory =
                 working_directory.context("fake repository has no working directory")?;
             for (path, content) in contents.await? {
-                let abs_path = working_directory.join(path.as_std_path());
-                match content {
-                    Some(content) => fs.write_file_internal(&abs_path, content, false)?,
-                    None => {
-                        fs.remove_file(
-                            &abs_path,
-                            RemoveOptions {
-                                ignore_if_not_exists: true,
-                                ..Default::default()
-                            },
-                        )
-                        .await?
-                    }
-                }
+                fs.write_file_internal(working_directory.join(path.as_std_path()), content, false)?;
             }
             Ok(())
         }

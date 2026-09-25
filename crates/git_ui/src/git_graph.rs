@@ -1348,6 +1348,39 @@ impl PanelGitGraph {
         }
     }
 
+    pub(crate) fn select_next(&mut self, cx: &mut Context<Self>) {
+        let Some(last_index) = self.graph_data.commits.len().checked_sub(1) else {
+            return;
+        };
+        let index = self
+            .selected_index
+            .map_or(0, |index| (index + 1).min(last_index));
+        self.select(index, cx);
+    }
+
+    pub(crate) fn select_previous(&mut self, cx: &mut Context<Self>) {
+        if self.graph_data.commits.is_empty() {
+            return;
+        }
+        let index = self
+            .selected_index
+            .map_or(0, |index| index.saturating_sub(1));
+        self.select(index, cx);
+    }
+
+    pub(crate) fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected_index {
+            self.open_commit(index, window, cx);
+        }
+    }
+
+    fn select(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.selected_index = Some(index);
+        self.scroll_handle
+            .scroll_to_item(index, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
     fn open_commit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(commit) = self.graph_data.commits.get(index) else {
             return;

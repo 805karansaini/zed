@@ -1387,6 +1387,103 @@ impl PanelButtons {
     }
 }
 
+/// The right-click menu shared by a panel's status bar button and its activity bar
+/// button: dock position, flexible or fixed width, and hiding the button.
+fn panel_button_context_menu(
+    panel: Arc<dyn PanelHandle>,
+    dock_position: DockPosition,
+    supports_flexible: bool,
+    currently_flexible: bool,
+    dock_for_menu: Entity<Dock>,
+    workspace_for_menu: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ContextMenu> {
+    const POSITIONS: [DockPosition; 3] = [
+        DockPosition::Left,
+        DockPosition::Right,
+        DockPosition::Bottom,
+    ];
+
+    let panel_hide = panel.hide_button_setting(cx);
+    ContextMenu::build(window, cx, |mut menu, _, cx| {
+        let mut has_position_entries = false;
+        for position in POSITIONS {
+            if panel.position_is_valid(position, cx) {
+                let is_current = position == dock_position;
+                let panel = panel.clone();
+                menu = menu.toggleable_entry(
+                    format!("Dock {}", position.label()),
+                    is_current,
+                    IconPosition::Start,
+                    None,
+                    move |window, cx| {
+                        if !is_current {
+                            panel.set_position(position, window, cx);
+                        }
+                    },
+                );
+                has_position_entries = true;
+            }
+        }
+        if supports_flexible {
+            if has_position_entries {
+                menu = menu.separator();
+            }
+            let panel_for_flex = panel.clone();
+            let dock_for_flex = dock_for_menu.clone();
+            let workspace_for_flex = workspace_for_menu.clone();
+            menu = menu.toggleable_entry(
+                "Flex Width",
+                currently_flexible,
+                IconPosition::Start,
+                None,
+                move |window, cx| {
+                    if !currently_flexible {
+                        if let Some(ws) = workspace_for_flex.upgrade() {
+                            ws.update(cx, |workspace, cx| {
+                                workspace.toggle_dock_panel_flexible_size(
+                                    &dock_for_flex,
+                                    panel_for_flex.as_ref(),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    }
+                },
+            );
+            let panel_for_fixed = panel.clone();
+            let dock_for_fixed = dock_for_menu.clone();
+            let workspace_for_fixed = workspace_for_menu.clone();
+            menu = menu.toggleable_entry(
+                "Fixed Width",
+                !currently_flexible,
+                IconPosition::Start,
+                None,
+                move |window, cx| {
+                    if currently_flexible {
+                        if let Some(ws) = workspace_for_fixed.upgrade() {
+                            ws.update(cx, |workspace, cx| {
+                                workspace.toggle_dock_panel_flexible_size(
+                                    &dock_for_fixed,
+                                    panel_for_fixed.as_ref(),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    }
+                },
+            );
+        }
+        if let Some(hide) = panel_hide {
+            menu = crate::status_bar::add_hide_button_entry(menu.separator(), hide);
+        }
+        menu
+    })
+}
+
 impl Render for PanelButtons {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dock = self.dock.read(cx);
@@ -1445,92 +1542,16 @@ impl Render for PanelButtons {
                 Some(
                     right_click_menu(name)
                         .menu(move |window, cx| {
-                            const POSITIONS: [DockPosition; 3] = [
-                                DockPosition::Left,
-                                DockPosition::Right,
-                                DockPosition::Bottom,
-                            ];
-
-                            let panel_hide = panel.hide_button_setting(cx);
-                            ContextMenu::build(window, cx, |mut menu, _, cx| {
-                                let mut has_position_entries = false;
-                                for position in POSITIONS {
-                                    if panel.position_is_valid(position, cx) {
-                                        let is_current = position == dock_position;
-                                        let panel = panel.clone();
-                                        menu = menu.toggleable_entry(
-                                            format!("Dock {}", position.label()),
-                                            is_current,
-                                            IconPosition::Start,
-                                            None,
-                                            move |window, cx| {
-                                                if !is_current {
-                                                    panel.set_position(position, window, cx);
-                                                }
-                                            },
-                                        );
-                                        has_position_entries = true;
-                                    }
-                                }
-                                if supports_flexible {
-                                    if has_position_entries {
-                                        menu = menu.separator();
-                                    }
-                                    let panel_for_flex = panel.clone();
-                                    let dock_for_flex = dock_for_menu.clone();
-                                    let workspace_for_flex = workspace_for_menu.clone();
-                                    menu = menu.toggleable_entry(
-                                        "Flex Width",
-                                        currently_flexible,
-                                        IconPosition::Start,
-                                        None,
-                                        move |window, cx| {
-                                            if !currently_flexible {
-                                                if let Some(ws) = workspace_for_flex.upgrade() {
-                                                    ws.update(cx, |workspace, cx| {
-                                                        workspace.toggle_dock_panel_flexible_size(
-                                                            &dock_for_flex,
-                                                            panel_for_flex.as_ref(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    });
-                                                }
-                                            }
-                                        },
-                                    );
-                                    let panel_for_fixed = panel.clone();
-                                    let dock_for_fixed = dock_for_menu.clone();
-                                    let workspace_for_fixed = workspace_for_menu.clone();
-                                    menu = menu.toggleable_entry(
-                                        "Fixed Width",
-                                        !currently_flexible,
-                                        IconPosition::Start,
-                                        None,
-                                        move |window, cx| {
-                                            if currently_flexible {
-                                                if let Some(ws) = workspace_for_fixed.upgrade() {
-                                                    ws.update(cx, |workspace, cx| {
-                                                        workspace.toggle_dock_panel_flexible_size(
-                                                            &dock_for_fixed,
-                                                            panel_for_fixed.as_ref(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    });
-                                                }
-                                            }
-                                        },
-                                    );
-                                }
-                                if let Some(hide) = panel_hide {
-                                    menu = crate::status_bar::add_hide_button_entry(
-                                        menu.separator(),
-                                        hide,
-                                    );
-                                }
-                                menu
-                            })
+                            panel_button_context_menu(
+                                panel.clone(),
+                                dock_position,
+                                supports_flexible,
+                                currently_flexible,
+                                dock_for_menu.clone(),
+                                workspace_for_menu.clone(),
+                                window,
+                                cx,
+                            )
                         })
                         .anchor(menu_anchor)
                         .attach(menu_attach)
@@ -1635,7 +1656,7 @@ impl ActivityBar {
         count: Option<usize>,
         focus_handle: Option<FocusHandle>,
         cx: &App,
-    ) -> impl IntoElement {
+    ) -> Div {
         let tooltip_action = action.boxed_clone();
         div()
             .relative()
@@ -1683,6 +1704,8 @@ impl Render for ActivityBar {
         let dock = self.dock.read(cx);
         let active_index = dock.active_panel_index;
         let is_open = dock.is_open;
+        let dock_position = dock.position;
+        let workspace = dock.workspace.clone();
         let focus_handle = dock.focus_handle(cx);
 
         let panel_buttons: Vec<_> = dock
@@ -1705,8 +1728,9 @@ impl Render for ActivityBar {
                     .icon_label(window, cx)
                     .and_then(|label| label.parse::<usize>().ok())
                     .filter(|_| !is_active);
-                Some(Self::render_button(
-                    (entry.panel.persistent_name(), is_active as u64),
+                let name = entry.panel.persistent_name();
+                let button = Self::render_button(
+                    (name, is_active as u64),
                     icon,
                     is_active,
                     tooltip,
@@ -1714,7 +1738,30 @@ impl Render for ActivityBar {
                     count,
                     Some(focus_handle.clone()),
                     cx,
-                ))
+                );
+                let panel = entry.panel.clone();
+                let supports_flexible = panel.supports_flexible_size(cx);
+                let currently_flexible = panel.has_flexible_size(window, cx);
+                let dock_for_menu = self.dock.clone();
+                let workspace_for_menu = workspace.clone();
+                Some(
+                    right_click_menu(SharedString::from(format!("activity-bar-menu-{name}")))
+                        .menu(move |window, cx| {
+                            panel_button_context_menu(
+                                panel.clone(),
+                                dock_position,
+                                supports_flexible,
+                                currently_flexible,
+                                dock_for_menu.clone(),
+                                workspace_for_menu.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                        .anchor(Anchor::TopLeft)
+                        .attach(Anchor::TopRight)
+                        .trigger(move |_, _, _| button),
+                )
             })
             .collect();
 
