@@ -7,7 +7,6 @@ use crate::commit_context_menu::{
 use crate::commit_modal::CommitModal;
 use crate::commit_tooltip::{CommitAvatar, CommitTooltip};
 use crate::commit_view::CommitView;
-use crate::git_graph::PanelGitGraph;
 use crate::git_panel_settings::GitPanelScrollbarAccessor;
 use crate::project_diff::{DeployBranchDiff, Diff, ProjectDiff};
 use crate::remote_output::{self, RemoteAction, SuccessMessage};
@@ -164,8 +163,6 @@ actions!(
         ActivateChangesTab,
         /// Activates the History tab.
         ActivateHistoryTab,
-        /// Activates the Graph tab.
-        ActivateGraphTab,
     ]
 );
 
@@ -564,7 +561,6 @@ struct SerializedCommitMessage {
 enum GitPanelTab {
     Changes,
     History,
-    Graph,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1151,7 +1147,6 @@ pub struct GitPanel {
     bulk_staging: Option<BulkStaging>,
     stash_entries: GitStash,
     active_tab: GitPanelTab,
-    panel_graph: Option<Entity<PanelGitGraph>>,
     commit_history_scroll_handle: UniformListScrollHandle,
     commit_history: CommitHistory,
     focused_history_entry: Option<usize>,
@@ -1471,7 +1466,6 @@ impl GitPanel {
                 bulk_staging: None,
                 stash_entries: Default::default(),
                 active_tab: GitPanelTab::Changes,
-                panel_graph: None,
                 commit_history_scroll_handle: UniformListScrollHandle::new(),
                 commit_history: CommitHistory::Loading,
                 focused_history_entry: None,
@@ -1880,7 +1874,6 @@ impl GitPanel {
             match self.active_tab {
                 GitPanelTab::Changes => dispatch_context.add("ChangesList"),
                 GitPanelTab::History => dispatch_context.add("HistoryList"),
-                GitPanelTab::Graph => dispatch_context.add("GraphList"),
             }
         }
 
@@ -2049,12 +2042,6 @@ impl GitPanel {
             self.select_previous_history_entry(cx);
             return;
         }
-        if self.active_tab == GitPanelTab::Graph {
-            if let Some(panel_graph) = &self.panel_graph {
-                panel_graph.update(cx, |panel_graph, cx| panel_graph.select_previous(cx));
-            }
-            return;
-        }
 
         let item_count = self.entries.len();
         if item_count == 0 {
@@ -2132,12 +2119,6 @@ impl GitPanel {
     fn select_next(&mut self, _: &menu::SelectNext, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab == GitPanelTab::History {
             self.select_next_history_entry(cx);
-            return;
-        }
-        if self.active_tab == GitPanelTab::Graph {
-            if let Some(panel_graph) = &self.panel_graph {
-                panel_graph.update(cx, |panel_graph, cx| panel_graph.select_next(cx));
-            }
             return;
         }
 
@@ -2389,12 +2370,6 @@ impl GitPanel {
     fn open_diff(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab == GitPanelTab::History {
             self.open_selected_history_commit(window, cx);
-            return;
-        }
-        if self.active_tab == GitPanelTab::Graph {
-            if let Some(panel_graph) = &self.panel_graph {
-                panel_graph.update(cx, |panel_graph, cx| panel_graph.open_selected(window, cx));
-            }
             return;
         }
         if let Some(GitListEntry::Directory(dir_entry)) = self
@@ -7191,19 +7166,6 @@ impl GitPanel {
                 GitPanelTab::History,
                 ActivateHistoryTab.boxed_clone(),
             ))
-            .child(
-                Divider::vertical()
-                    .color(ui::DividerColor::BorderFaded)
-                    .h_full(),
-            )
-            .child(tab(
-                ElementId::Name("graph-tab".into()),
-                active_tab == GitPanelTab::Graph,
-                false,
-                "Graph".into(),
-                GitPanelTab::Graph,
-                ActivateGraphTab.boxed_clone(),
-            ))
     }
 
     fn render_history_tab(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -7346,38 +7308,6 @@ impl GitPanel {
         self.set_active_tab(GitPanelTab::History, window, cx);
     }
 
-    fn activate_graph_tab(
-        &mut self,
-        _: &ActivateGraphTab,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_active_tab(GitPanelTab::Graph, window, cx);
-    }
-
-    fn render_graph_tab(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(repository) = self.active_repository.clone() else {
-            return Self::render_history_placeholder("No repository found").into_any_element();
-        };
-        let panel_graph = match &self.panel_graph {
-            Some(panel_graph) if panel_graph.read(cx).is_for_repository(&repository) => {
-                panel_graph.clone()
-            }
-            _ => {
-                let workspace = self.workspace.clone();
-                let panel_graph = cx.new(|cx| PanelGitGraph::new(repository, workspace, cx));
-                self.panel_graph = Some(panel_graph.clone());
-                panel_graph
-            }
-        };
-        v_flex()
-            .flex_1()
-            .size_full()
-            .overflow_hidden()
-            .child(panel_graph)
-            .into_any_element()
-    }
-
     fn set_active_tab(&mut self, tab: GitPanelTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab == tab {
             return;
@@ -7388,7 +7318,7 @@ impl GitPanel {
             GitPanelTab::History => {
                 self.load_commit_history(cx);
             }
-            GitPanelTab::Changes | GitPanelTab::Graph => {
+            GitPanelTab::Changes => {
                 self.set_commit_history(CommitHistory::Loading, cx);
                 self._repo_subscriptions.clear();
             }
@@ -9432,7 +9362,6 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::reset_font_size))
             .on_action(cx.listener(Self::activate_changes_tab))
             .on_action(cx.listener(Self::activate_history_tab))
-            .on_action(cx.listener(Self::activate_graph_tab))
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().colors().panel_background)
@@ -9469,7 +9398,6 @@ impl Render for GitPanel {
                                 this.children(self.render_previous_commit(window, cx))
                             }),
                         GitPanelTab::History => this.child(self.render_history_tab(window, cx)),
-                        GitPanelTab::Graph => this.child(self.render_graph_tab(cx)),
                     })
                     .into_any_element(),
             )
