@@ -476,17 +476,34 @@ impl GitRepository for FakeGitRepository {
     ) -> BoxFuture<'_, Result<()>> {
         let fs = self.fs.clone();
         let working_directory = self.dot_git_path.parent().map(Path::to_path_buf);
-        let contents = self.with_state_async(false, move |state| {
-            // An empty commit means the index, matching `git checkout -- <paths>`.
-            let source = match commit.as_str() {
-                "" => &state.index_contents,
-                "HEAD" => &state.head_contents,
-                _ => bail!("fake checkout_files only supports the index and HEAD, got {commit}"),
-            };
+        // Like git, checking out from a commit also updates the index, while an empty
+        // commit (`git checkout -- <paths>`) restores from the index and leaves it alone.
+        let from_index = commit.is_empty();
+        let contents = self.with_state_async(!from_index, move |state| {
+            if from_index {
+                return Ok(paths
+                    .into_iter()
+                    .map(|path| {
+                        let content = state.index_contents.get(&path).cloned();
+                        (path, content)
+                    })
+                    .collect::<Vec<_>>());
+            }
+            if commit != "HEAD" {
+                bail!("fake checkout_files only supports the index and HEAD, got {commit}");
+            }
             Ok(paths
                 .into_iter()
                 .map(|path| {
-                    let content = source.get(&path).cloned();
+                    let content = state.head_contents.get(&path).cloned();
+                    match &content {
+                        Some(content) => {
+                            state.index_contents.insert(path.clone(), content.clone());
+                        }
+                        None => {
+                            state.index_contents.remove(&path);
+                        }
+                    }
                     (path, content)
                 })
                 .collect::<Vec<_>>())

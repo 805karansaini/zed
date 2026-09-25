@@ -2541,11 +2541,35 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Rows under "Changes" only show unstaged changes, so discarding them from any
-        // entry point (hover button, context menu, keyboard) must keep staged edits.
-        if self.selected_section() == Some(Section::Unstaged) {
-            let entries = self.effective_status_entries();
-            self.discard_unstaged_changes(entries, action.skip_prompt, window, cx);
+        // When grouped by staging state, discarding never touches staged edits, as in
+        // VS Code. Marks are tracked per path rather than per row, so this can't depend
+        // on which section a selected row is in: every selected file is restored from
+        // the index. Conflicted files can't be restored from the index and keep the
+        // regular behavior.
+        if Self::groups_by_staging(cx) {
+            let Some(repository) = self.active_repository.clone() else {
+                return;
+            };
+            let mut seen_paths = HashSet::default();
+            let (conflicted, others): (Vec<_>, Vec<_>) = self
+                .effective_status_entries()
+                .into_iter()
+                .filter(|entry| seen_paths.insert(entry.repo_path.clone()))
+                .partition(|entry| {
+                    repository
+                        .read(cx)
+                        .had_conflict_on_last_merge_head_change(&entry.repo_path)
+                });
+            let unstaged = others
+                .into_iter()
+                .filter(|entry| entry.status.staging().has_unstaged())
+                .collect::<Vec<_>>();
+            if !unstaged.is_empty() {
+                self.discard_unstaged_changes(unstaged, action.skip_prompt, window, cx);
+            }
+            if !conflicted.is_empty() {
+                self.revert_entries(conflicted, action.skip_prompt, window, cx);
+            }
             return;
         }
         let marked = self.effective_status_entries();
@@ -5779,8 +5803,8 @@ impl GitPanel {
         }
     }
 
-    fn selected_section(&self) -> Option<Section> {
-        self.section_for_entry_index(self.selected_entry?)
+    fn groups_by_staging(cx: &App) -> bool {
+        GitPanelSettings::get_global(cx).group_by == GitPanelGroupBy::Staging
     }
 
     fn section_entry_count(&self, header_ix: usize) -> usize {
@@ -8350,8 +8374,16 @@ impl GitPanel {
             self.clear_marks();
         }
         self.selected_entry = Some(ix);
-        let discards_unstaged_only = self.selected_section() == Some(Section::Unstaged);
+        let discards_unstaged_only = Self::groups_by_staging(cx);
         let bulk_entries = self.effective_status_entries();
+        let nothing_to_discard = discards_unstaged_only
+            && self.active_repository.as_ref().is_some_and(|repository| {
+                let repository = repository.read(cx);
+                bulk_entries.iter().all(|entry| {
+                    !entry.status.staging().has_unstaged()
+                        && !repository.had_conflict_on_last_merge_head_change(&entry.repo_path)
+                })
+            });
         let (stage_title, restore_title) = if bulk_entries.len() > 1 {
             let count = bulk_entries.len();
             let stage_title = if bulk_entries
@@ -8396,7 +8428,11 @@ impl GitPanel {
             context_menu
                 .context(self.focus_handle.clone())
                 .action(stage_title, ToggleStaged.boxed_clone())
-                .action(restore_title, git::RestoreFile::default().boxed_clone())
+                .action_disabled_when(
+                    nothing_to_discard,
+                    restore_title,
+                    git::RestoreFile::default().boxed_clone(),
+                )
                 .separator()
                 .action("Unstaged Changes", ViewUnstagedChanges.boxed_clone())
                 .action("Staged Changes", ViewStagedChanges.boxed_clone())
@@ -14227,7 +14263,7 @@ mod tests {
         (fs, panel, cx)
     }
 
-    fn unstaged_entry_index(panel: &GitPanel, path: &str) -> usize {
+    fn entry_index_in_section(panel: &GitPanel, path: &str, section: Section) -> usize {
         let path = repo_path(path);
         panel
             .entries
@@ -14237,9 +14273,13 @@ mod tests {
                 entry
                     .status_entry()
                     .is_some_and(|entry| entry.repo_path == path)
-                    && panel.section_for_entry_index(ix) == Some(Section::Unstaged)
+                    && panel.section_for_entry_index(ix) == Some(section)
             })
-            .expect("file should be listed under Changes")
+            .expect("file should be listed in the section")
+    }
+
+    fn unstaged_entry_index(panel: &GitPanel, path: &str) -> usize {
+        entry_index_in_section(panel, path, Section::Unstaged)
     }
 
     async fn assert_discarded_unstaged_only(fs: &FakeFs, file: &str) {
@@ -14290,6 +14330,30 @@ mod tests {
         cx.simulate_prompt_answer("Discard Changes");
         cx.run_until_parked();
 
+        assert_discarded_unstaged_only(&fs, "menu.txt").await;
+    }
+
+    #[gpui::test]
+    async fn test_discard_selection_across_sections_keeps_staged_edits(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (fs, panel, mut cx) = setup_partially_staged_panel(cx).await;
+
+        // Select a row under "Changes", then cmd-click a different file's row under
+        // "Staged Changes" so the last selected row is in the staged section.
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.clear_marks_and_select(unstaged_entry_index(panel, "keyboard.txt"), cx);
+            let staged_ix = entry_index_in_section(panel, "menu.txt", Section::Staged);
+            panel.toggle_mark(staged_ix, cx);
+            assert!(panel.effective_status_entries().len() >= 2);
+            panel.revert_selected(&git::RestoreFile::default(), window, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(cx.has_pending_prompt(), "discarding should ask first");
+        cx.simulate_prompt_answer("Discard Changes");
+        cx.run_until_parked();
+
+        assert_discarded_unstaged_only(&fs, "keyboard.txt").await;
         assert_discarded_unstaged_only(&fs, "menu.txt").await;
     }
 
