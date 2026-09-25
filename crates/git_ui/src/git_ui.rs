@@ -439,6 +439,38 @@ pub fn git_status_icon(status: FileStatus) -> impl IntoElement {
     GitStatusIcon::new(status)
 }
 
+/// The single-letter status marker shown next to changed files.
+///
+/// `staged` selects which side of a tracked file's status to describe: a file
+/// listed under "Staged Changes" reports its index status, and one listed under
+/// "Changes" reports its worktree status.
+pub fn git_status_letter(status: FileStatus, staged: Option<bool>) -> Label {
+    let (letter, color) = match status {
+        FileStatus::Untracked => ("U", Color::VersionControlAdded),
+        FileStatus::Ignored => ("I", Color::VersionControlIgnored),
+        FileStatus::Unmerged(_) => ("!", Color::VersionControlConflict),
+        FileStatus::Tracked(tracked) => {
+            let code = match staged {
+                Some(true) => tracked.index_status,
+                Some(false) => tracked.worktree_status,
+                None if tracked.worktree_status == StatusCode::Unmodified => tracked.index_status,
+                None => tracked.worktree_status,
+            };
+            match code {
+                StatusCode::Added => ("A", Color::VersionControlAdded),
+                StatusCode::Deleted => ("D", Color::VersionControlDeleted),
+                StatusCode::Renamed => ("R", Color::VersionControlAdded),
+                StatusCode::Copied => ("C", Color::VersionControlAdded),
+                StatusCode::TypeChanged => ("T", Color::VersionControlModified),
+                StatusCode::Modified | StatusCode::Unmodified => {
+                    ("M", Color::VersionControlModified)
+                }
+            }
+        }
+    };
+    Label::new(letter).size(LabelSize::Small).color(color)
+}
+
 struct RenameBranchModal {
     current_branch: SharedString,
     editor: Entity<Editor>,

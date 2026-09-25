@@ -742,7 +742,7 @@ pub struct GitPanelSettingsContent {
     pub default_width: Option<PixelSetting>,
     /// How entry statuses are displayed.
     ///
-    /// Default: icon
+    /// Default: label_color
     pub status_style: Option<StatusStyle>,
 
     /// Whether to show file icons in the git panel.

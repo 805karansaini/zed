@@ -1077,8 +1077,8 @@
     // Style of the git status indicator in the panel.
     //
     // Choices: label_color, icon
-    // Default: icon
-    "status_style": "icon",
+    // Default: label_color
+    "status_style": "label_color",
     // Whether to show file icons in the git panel.
     //
     // Default: true
