@@ -146,6 +146,11 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: false
     pub close_panel_on_toggle: Option<bool>,
+    /// Whether to show the activity bar: a column of icons at the left edge of
+    /// the window that opens the panels docked on the left and project search.
+    ///
+    /// Default: true
+    pub activity_bar: Option<bool>,
     /// Window title template.
     ///
     /// Available variables are `${projectName}`, `${fileName}`,

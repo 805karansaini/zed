@@ -8055,7 +8055,6 @@ impl GitPanel {
                             h_flex()
                                 .id(actions_id)
                                 .gap_px()
-                                .occlude()
                                 .visible_on_hover(group_name)
                                 .when(
                                     has_write_access
@@ -8545,7 +8544,6 @@ impl GitPanel {
                     .id(actions_id)
                     .flex_none()
                     .gap_px()
-                    .occlude()
                     .visible_on_hover(group_name)
                     .child(
                         IconButton::new(("open-file", ix), IconName::File)
@@ -8788,7 +8786,6 @@ impl GitPanel {
                 h_flex()
                     .id(actions_id)
                     .flex_none()
-                    .occlude()
                     .visible_on_hover(group_name)
                     .child(
                         IconButton::new(

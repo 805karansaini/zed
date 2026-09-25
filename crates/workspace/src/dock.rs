@@ -1390,6 +1390,10 @@ impl PanelButtons {
 impl Render for PanelButtons {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dock = self.dock.read(cx);
+        // The activity bar shows the left dock's buttons instead.
+        if dock.position == DockPosition::Left && WorkspaceSettings::get_global(cx).activity_bar {
+            return h_flex();
+        }
         let active_index = dock.active_panel_index;
         let is_open = dock.is_open;
         let dock_position = dock.position;
@@ -1598,6 +1602,157 @@ impl StatusItemView for PanelButtons {
         // Panel buttons are hidden on a per-panel basis through each panel
         // button's own context menu.
         None
+    }
+}
+
+const ACTIVITY_BAR_WIDTH: Pixels = px(44.);
+
+/// A VS Code-style column of buttons at the left edge of the window that
+/// toggles the panels in the left dock and opens project search.
+pub struct ActivityBar {
+    dock: Entity<Dock>,
+    _subscriptions: [Subscription; 2],
+}
+
+impl ActivityBar {
+    pub fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
+        let subscriptions = [
+            cx.observe(&dock, |_, _, cx| cx.notify()),
+            cx.observe_global::<SettingsStore>(|_, cx| cx.notify()),
+        ];
+        Self {
+            dock,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    fn render_button(
+        id: impl Into<ElementId>,
+        icon: IconName,
+        is_active: bool,
+        tooltip: SharedString,
+        action: Box<dyn Action>,
+        count: Option<usize>,
+        focus_handle: Option<FocusHandle>,
+        cx: &App,
+    ) -> impl IntoElement {
+        let tooltip_action = action.boxed_clone();
+        div()
+            .relative()
+            .w_full()
+            .py_0p5()
+            .flex()
+            .justify_center()
+            .when(is_active, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(2.))
+                        .bg(cx.theme().colors().icon_accent),
+                )
+            })
+            .child(
+                IconButton::new(id, icon)
+                    .icon_size(IconSize::Medium)
+                    .size(ButtonSize::Large)
+                    .icon_color(if is_active {
+                        Color::Default
+                    } else {
+                        Color::Muted
+                    })
+                    .aria_label(tooltip.clone())
+                    .tooltip(move |_window, cx| {
+                        Tooltip::for_action(tooltip.clone(), &*tooltip_action, cx)
+                    })
+                    .on_click(move |_, window, cx| {
+                        if let Some(focus_handle) = &focus_handle {
+                            window.focus(focus_handle, cx);
+                        }
+                        window.dispatch_action(action.boxed_clone(), cx)
+                    }),
+            )
+            .when_some(count, |this, count| this.child(CountBadge::new(count)))
+    }
+}
+
+impl Render for ActivityBar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dock = self.dock.read(cx);
+        let active_index = dock.active_panel_index;
+        let is_open = dock.is_open;
+        let focus_handle = dock.focus_handle(cx);
+
+        let panel_buttons: Vec<_> = dock
+            .panel_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let icon = entry.panel.icon(window, cx)?;
+                let tooltip: SharedString = entry.panel.icon_tooltip(window, cx)?.into();
+                let is_active = Some(index) == active_index && is_open;
+                // Clicking the open panel closes the dock, like VS Code; a panel's own
+                // toggle action only moves focus when the panel is already visible.
+                let action = if is_active {
+                    dock.toggle_action()
+                } else {
+                    entry.panel.toggle_action(window, cx)
+                };
+                let count = entry
+                    .panel
+                    .icon_label(window, cx)
+                    .and_then(|label| label.parse::<usize>().ok())
+                    .filter(|_| !is_active);
+                Some(Self::render_button(
+                    (entry.panel.persistent_name(), is_active as u64),
+                    icon,
+                    is_active,
+                    tooltip,
+                    action,
+                    count,
+                    Some(focus_handle.clone()),
+                    cx,
+                ))
+            })
+            .collect();
+
+        v_flex()
+            .id("activity-bar")
+            .h_full()
+            .w(ACTIVITY_BAR_WIDTH)
+            .flex_none()
+            .pt_1()
+            .justify_between()
+            .bg(cx.theme().colors().status_bar_background)
+            .border_r_1()
+            .border_color(cx.theme().colors().border)
+            .child(
+                v_flex()
+                    .w_full()
+                    .children(panel_buttons)
+                    .child(Self::render_button(
+                        "activity-bar-search",
+                        IconName::MagnifyingGlass,
+                        false,
+                        "Search".into(),
+                        Box::new(crate::pane::DeploySearch::default()),
+                        None,
+                        None,
+                        cx,
+                    )),
+            )
+            .child(v_flex().w_full().pb_1().child(Self::render_button(
+                "activity-bar-settings",
+                IconName::Settings,
+                false,
+                "Settings".into(),
+                Box::new(zed_actions::OpenSettings),
+                None,
+                None,
+                cx,
+            )))
     }
 }
 
