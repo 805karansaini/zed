@@ -2541,6 +2541,13 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Rows under "Changes" only show unstaged changes, so discarding them from any
+        // entry point (hover button, context menu, keyboard) must keep staged edits.
+        if self.selected_section() == Some(Section::Unstaged) {
+            let entries = self.effective_status_entries();
+            self.discard_unstaged_changes(entries, action.skip_prompt, window, cx);
+            return;
+        }
         let marked = self.effective_status_entries();
         if marked.len() > 1 {
             self.revert_entries(marked, action.skip_prompt, window, cx);
@@ -2711,7 +2718,7 @@ impl GitPanel {
                 .collect::<Vec<_>>()
         };
         match section {
-            Section::Unstaged => self.discard_unstaged_changes(entries, window, cx),
+            Section::Unstaged => self.discard_unstaged_changes(entries, false, window, cx),
             Section::Tracked => self.revert_entries(entries, false, window, cx),
             Section::Conflict | Section::New | Section::Staged => {}
         }
@@ -2722,6 +2729,7 @@ impl GitPanel {
     fn discard_unstaged_changes(
         &mut self,
         entries: Vec<GitStatusEntry>,
+        skip_prompt: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2760,14 +2768,18 @@ impl GitPanel {
                 "Discard Changes",
             )
         };
-        let prompt = window.prompt(
-            PromptLevel::Warning,
-            message,
-            Some(&details),
-            &[confirm_label, "Cancel"],
-            cx,
-        );
-        let prompt = cx.background_spawn(prompt);
+        let prompt = if skip_prompt {
+            Task::ready(Ok(0))
+        } else {
+            let prompt = window.prompt(
+                PromptLevel::Warning,
+                message,
+                Some(&details),
+                &[confirm_label, "Cancel"],
+                cx,
+            );
+            cx.background_spawn(prompt)
+        };
 
         window
             .spawn(cx, async move |cx| {
@@ -5767,6 +5779,10 @@ impl GitPanel {
         }
     }
 
+    fn selected_section(&self) -> Option<Section> {
+        self.section_for_entry_index(self.selected_entry?)
+    }
+
     fn section_entry_count(&self, header_ix: usize) -> usize {
         self.entries
             .iter()
@@ -8334,6 +8350,7 @@ impl GitPanel {
             self.clear_marks();
         }
         self.selected_entry = Some(ix);
+        let discards_unstaged_only = self.selected_section() == Some(Section::Unstaged);
         let bulk_entries = self.effective_status_entries();
         let (stage_title, restore_title) = if bulk_entries.len() > 1 {
             let count = bulk_entries.len();
@@ -8345,8 +8362,13 @@ impl GitPanel {
             } else {
                 format!("Stage {count} Files")
             };
-            let restore_title = if bulk_entries.iter().all(|entry| entry.status.is_created()) {
+            let restore_title = if bulk_entries.iter().all(|entry| entry.status.is_untracked())
+                || (!discards_unstaged_only
+                    && bulk_entries.iter().all(|entry| entry.status.is_created()))
+            {
                 format!("Trash {count} Files")
+            } else if discards_unstaged_only {
+                format!("Discard Unstaged Changes to {count} Files")
             } else {
                 format!("Discard Changes to {count} Files")
             };
@@ -8357,8 +8379,12 @@ impl GitPanel {
             } else {
                 "Stage File".to_string()
             };
-            let restore_title = if entry.status.is_created() {
+            let restore_title = if entry.status.is_untracked()
+                || (!discards_unstaged_only && entry.status.is_created())
+            {
                 "Trash File".to_string()
+            } else if discards_unstaged_only {
+                "Discard Unstaged Changes".to_string()
             } else {
                 "Discard Changes".to_string()
             };
@@ -8686,26 +8712,11 @@ impl GitPanel {
                                         ))
                                     }
                                 })
-                                .on_click({
-                                    let entry = entry.clone();
-                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                        cx.stop_propagation();
-                                        this.clear_marks_and_select(ix, cx);
-                                        if section == Some(Section::Unstaged) {
-                                            this.discard_unstaged_changes(
-                                                vec![entry.clone()],
-                                                window,
-                                                cx,
-                                            );
-                                        } else {
-                                            this.revert_selected(
-                                                &git::RestoreFile::default(),
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    })
-                                }),
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.clear_marks_and_select(ix, cx);
+                                    this.revert_selected(&git::RestoreFile::default(), window, cx);
+                                })),
                         )
                     })
                     .child(
@@ -14153,6 +14164,160 @@ mod tests {
                 EditorMode::AutoHeight { .. }
             ));
         });
+    }
+
+    /// A panel grouped by staging state where `menu.txt` and `keyboard.txt` each have a
+    /// staged edit and a further unstaged edit on top of it.
+    async fn setup_partially_staged_panel(
+        cx: &mut TestAppContext,
+    ) -> (Arc<FakeFs>, Entity<GitPanel>, VisualTestContext) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Staging);
+                });
+            });
+        });
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "menu.txt": "menu unstaged\n",
+                "keyboard.txt": "keyboard unstaged\n",
+            }),
+        )
+        .await;
+        let dot_git = Path::new(path!("/project/.git"));
+        fs.set_head_for_repo(
+            dot_git,
+            &[
+                ("menu.txt", "menu committed\n".into()),
+                ("keyboard.txt", "keyboard committed\n".into()),
+            ],
+            "0123456789abcdef0123456789abcdef01234567",
+        );
+        fs.set_index_for_repo(
+            dot_git,
+            &[
+                ("menu.txt", "menu staged\n".into()),
+                ("keyboard.txt", "keyboard staged\n".into()),
+            ],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(&mut cx, GitPanel::new);
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.open_panel::<GitPanel>(window, cx);
+        });
+        await_git_panel_entries(&panel, &mut cx).await;
+        cx.run_until_parked();
+
+        (fs, panel, cx)
+    }
+
+    fn unstaged_entry_index(panel: &GitPanel, path: &str) -> usize {
+        let path = repo_path(path);
+        panel
+            .entries
+            .iter()
+            .enumerate()
+            .position(|(ix, entry)| {
+                entry
+                    .status_entry()
+                    .is_some_and(|entry| entry.repo_path == path)
+                    && panel.section_for_entry_index(ix) == Some(Section::Unstaged)
+            })
+            .expect("file should be listed under Changes")
+    }
+
+    async fn assert_discarded_unstaged_only(fs: &FakeFs, file: &str) {
+        let contents = fs
+            .load(Path::new(path!("/project")).join(file).as_path())
+            .await
+            .unwrap();
+        assert_eq!(
+            contents,
+            format!("{} staged\n", file.trim_end_matches(".txt")),
+            "discarding from Changes should restore the staged version of {file}",
+        );
+        let index = fs
+            .with_git_state(Path::new(path!("/project/.git")), false, |state| {
+                state.index_contents.get(&repo_path(file)).cloned()
+            })
+            .unwrap();
+        assert_eq!(
+            index.as_deref(),
+            Some(format!("{} staged\n", file.trim_end_matches(".txt")).as_bytes()),
+            "discarding from Changes must not touch the index for {file}",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_context_menu_discard_in_changes_keeps_staged_edits(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (fs, panel, mut cx) = setup_partially_staged_panel(cx).await;
+
+        let menu = panel.update_in(&mut cx, |panel, window, cx| {
+            let ix = unstaged_entry_index(panel, "menu.txt");
+            panel.deploy_entry_context_menu(gpui::point(px(0.), px(0.)), ix, window, cx);
+            panel
+                .context_menu
+                .as_ref()
+                .map(|context_menu| context_menu.menu.clone())
+                .expect("right-clicking a file should open its context menu")
+        });
+        // The second item is the discard entry, after "Stage/Unstage File".
+        menu.update_in(&mut cx, |menu, window, cx| {
+            menu.select_first(&menu::SelectFirst, window, cx);
+            menu.select_next(&menu::SelectNext, window, cx);
+            menu.confirm(&menu::Confirm, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(cx.has_pending_prompt(), "discarding should ask first");
+        cx.simulate_prompt_answer("Discard Changes");
+        cx.run_until_parked();
+
+        assert_discarded_unstaged_only(&fs, "menu.txt").await;
+    }
+
+    #[gpui::test]
+    async fn test_keyboard_discard_in_changes_keeps_staged_edits(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            cx.bind_keys([gpui::KeyBinding::new(
+                "backspace",
+                git::RestoreFile { skip_prompt: false },
+                Some("GitPanel"),
+            )]);
+        });
+        let (fs, panel, mut cx) = setup_partially_staged_panel(cx).await;
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.selected_entry = Some(unstaged_entry_index(panel, "keyboard.txt"));
+            panel.focus_handle.focus(window, cx);
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("backspace");
+        cx.run_until_parked();
+
+        assert!(cx.has_pending_prompt(), "discarding should ask first");
+        cx.simulate_prompt_answer("Discard Changes");
+        cx.run_until_parked();
+
+        assert_discarded_unstaged_only(&fs, "keyboard.txt").await;
     }
 
     #[gpui::test]

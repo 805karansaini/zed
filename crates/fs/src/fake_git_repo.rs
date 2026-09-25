@@ -470,11 +470,49 @@ impl GitRepository for FakeGitRepository {
 
     fn checkout_files(
         &self,
-        _commit: String,
-        _paths: Vec<RepoPath>,
+        commit: String,
+        paths: Vec<RepoPath>,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
-        unimplemented!()
+        let fs = self.fs.clone();
+        let working_directory = self.dot_git_path.parent().map(Path::to_path_buf);
+        let contents = self.with_state_async(false, move |state| {
+            // An empty commit means the index, matching `git checkout -- <paths>`.
+            let source = match commit.as_str() {
+                "" => &state.index_contents,
+                "HEAD" => &state.head_contents,
+                _ => bail!("fake checkout_files only supports the index and HEAD, got {commit}"),
+            };
+            Ok(paths
+                .into_iter()
+                .map(|path| {
+                    let content = source.get(&path).cloned();
+                    (path, content)
+                })
+                .collect::<Vec<_>>())
+        });
+        async move {
+            let working_directory =
+                working_directory.context("fake repository has no working directory")?;
+            for (path, content) in contents.await? {
+                let abs_path = working_directory.join(path.as_std_path());
+                match content {
+                    Some(content) => fs.write_file_internal(&abs_path, content, false)?,
+                    None => {
+                        fs.remove_file(
+                            &abs_path,
+                            RemoveOptions {
+                                ignore_if_not_exists: true,
+                                ..Default::default()
+                            },
+                        )
+                        .await?
+                    }
+                }
+            }
+            Ok(())
+        }
+        .boxed()
     }
 
     fn path(&self) -> PathBuf {
