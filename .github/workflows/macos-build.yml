@@ -1,0 +1,130 @@
+# Builds an unsigned (ad-hoc signed) Apple Silicon "Zed Dev" DMG for personal use.
+#
+# This follows script/bundle-mac but is trimmed for speed on free GitHub runners:
+# no remote_server, no debug info, no LTO, no license generation, no tests.
+# The dev release channel is kept on purpose: it never auto-updates, so an
+# upstream release can't replace this build.
+name: macOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - karan/vscode-git-panel
+
+# Queue instead of cancelling so an in-flight run still saves the dependency cache.
+concurrency:
+  group: macos-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-macos-aarch64:
+    runs-on: macos-15
+    timeout-minutes: 330
+    env:
+      TARGET_TRIPLE: aarch64-apple-darwin
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_LTO: "off"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      ZED_RELEASE_CHANNEL: dev
+      ZED_BUNDLE: "true"
+      CARGO_BUNDLE_SKIP_BUILD: "true"
+      CXXFLAGS: -stdlib=libc++
+      GIT_VERSION: v2.43.3
+      GIT_VERSION_SHA: fa29823
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Selecting the toolchain via RUSTUP_TOOLCHAIN skips the extra components and
+      # wasm/musl targets listed in rust-toolchain.toml, which this build doesn't need.
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$toolchain" --profile minimal --target "$TARGET_TRIPLE"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: macos-aarch64-release-v1
+          cache-on-failure: true
+
+      - name: Ensure build tools
+        run: |
+          set -euo pipefail
+          command -v cmake >/dev/null || brew install cmake
+          if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          if [[ "$(cargo -q bundle --help 2>&1 | head -n 1 || true)" != "cargo-bundle v0.6.1-zed" ]]; then
+            cargo install cargo-bundle --git https://github.com/zed-industries/cargo-bundle.git --branch zed-deploy
+          fi
+
+      # The real file is produced by script/generate-licenses (cargo-about); it is only
+      # read at runtime by the "Open Licenses" action, so a placeholder is enough here.
+      - name: Write placeholder licenses
+        run: printf '# Licenses\n\nSee https://github.com/zed-industries/zed for license information.\n' > assets/licenses.md
+
+      - name: Build zed and cli
+        run: cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --target "$TARGET_TRIPLE"
+
+      - name: Create app bundle
+        run: |
+          set -euo pipefail
+
+          pushd crates/zed
+          cp Cargo.toml Cargo.toml.backup
+          sed -i.backup "s/package.metadata.bundle-${ZED_RELEASE_CHANNEL}/package.metadata.bundle/" Cargo.toml
+          app_path="$(cargo bundle --release --target "$TARGET_TRIPLE" --select-workspace-root | xargs)"
+          mv Cargo.toml.backup Cargo.toml
+          popd
+          echo "Bundled ${app_path}"
+
+          mkdir -p "${app_path}/Contents/Resources"
+          cp crates/zed/resources/Document.icns "${app_path}/Contents/Resources/Document.icns"
+
+          release_dir="target/${TARGET_TRIPLE}/release"
+          strip -x "${release_dir}/zed"
+          strip -x "${release_dir}/cli"
+          cp "${release_dir}/zed" "${app_path}/Contents/MacOS/zed"
+          cp "${release_dir}/cli" "${app_path}/Contents/MacOS/cli"
+
+          rm -rf "${app_path}/Contents/Frameworks"
+          mkdir -p "${app_path}/Contents/Frameworks"
+
+          git_dir="$(mktemp -d)"
+          curl --silent --fail --location \
+            "https://github.com/desktop/dugite-native/releases/download/${GIT_VERSION}/dugite-native-${GIT_VERSION}-${GIT_VERSION_SHA}-macOS-arm64.tar.gz" \
+            | tar -xz -C "$git_dir" -f - bin/git
+          mv "${git_dir}/bin/git" "${app_path}/Contents/MacOS/git"
+          rm -rf "$git_dir"
+
+          cp "crates/zed/contents/${ZED_RELEASE_CHANNEL}/embedded.provisionprofile" "${app_path}/Contents/"
+
+          sed '/com.apple.developer.associated-domains/,+1d' crates/zed/resources/zed.entitlements \
+            > "${app_path}/Contents/Resources/zed.entitlements"
+          codesign --force --deep \
+            --entitlements "${app_path}/Contents/Resources/zed.entitlements" \
+            --sign - \
+            "${app_path}" -v
+
+          dmg_source="${release_dir}/dmg"
+          rm -rf "$dmg_source"
+          mkdir -p "$dmg_source"
+          mv "$app_path" "$dmg_source/"
+          ln -s /Applications "$dmg_source/Applications"
+          hdiutil create -volname "Zed Dev" -srcfolder "$dmg_source" -ov -format UDZO target/Zed-Dev-aarch64.dmg
+
+          du -sh "$dmg_source"/*.app target/Zed-Dev-aarch64.dmg
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-Dev-aarch64
+          path: target/Zed-Dev-aarch64.dmg
+          if-no-files-found: error
+          retention-days: 7

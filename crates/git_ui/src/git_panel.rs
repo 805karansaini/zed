@@ -9735,7 +9735,15 @@ mod tests {
         zlog::init_test();
 
         cx.update(|cx| {
-            let settings_store = SettingsStore::test(cx);
+            let mut settings_store = SettingsStore::test(cx);
+            // This fork ships VS Code-like git panel defaults; tests pin the
+            // upstream defaults they were written against.
+            settings_store.update_user_settings(cx, |settings| {
+                let git_panel = settings.git_panel.get_or_insert_default();
+                git_panel.group_by = Some(GitPanelGroupBy::Status);
+                git_panel.entry_primary_click_action = Some(GitPanelClickBehavior::ProjectDiff);
+                git_panel.file_icons = Some(false);
+            });
             cx.set_global(settings_store);
             theme_settings::init(LoadThemes::JustBase, cx);
             language_model::init(cx);

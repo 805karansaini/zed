@@ -826,7 +826,7 @@ pub struct ProjectPanelSettingsContent {
     pub default_width: Option<crate::PixelSetting>,
     /// The position of project panel
     ///
-    /// Default: right (Agentic layout), left (Classic layout)
+    /// Default: left (Classic layout), right (Agentic layout)
     pub dock: Option<DockSide>,
     // TODO
     pub title_tooltip_delay: Option<ProjectPanelTitleTooltipDelay>,

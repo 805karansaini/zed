@@ -734,7 +734,7 @@ pub struct GitPanelSettingsContent {
     pub button: Option<bool>,
     /// Where to dock the panel.
     ///
-    /// Default: right (Agentic layout), left (Classic layout)
+    /// Default: left (Classic layout), right (Agentic layout)
     pub dock: Option<DockPosition>,
     /// Default width of the panel in pixels.
     ///
@@ -747,7 +747,7 @@ pub struct GitPanelSettingsContent {
 
     /// Whether to show file icons in the git panel.
     ///
-    /// Default: false
+    /// Default: true
     pub file_icons: Option<bool>,
 
     /// What to show for directories in the git panel.
@@ -773,7 +773,7 @@ pub struct GitPanelSettingsContent {
 
     /// How to group entries in the git panel.
     ///
-    /// Default: status
+    /// Default: staging
     pub group_by: Option<GitPanelGroupBy>,
 
     /// Whether to collapse untracked files in the diff panel.
@@ -809,7 +809,7 @@ pub struct GitPanelSettingsContent {
 
     /// Default action when clicking a changed file in the Git panel.
     ///
-    /// Default: project_diff
+    /// Default: file_diff
     pub entry_primary_click_action: Option<GitPanelClickBehavior>,
 }
 
@@ -919,7 +919,7 @@ pub struct PanelSettingsContent {
     pub button: Option<bool>,
     /// Where to dock the panel.
     ///
-    /// Default: right (Agentic layout), left (Classic layout)
+    /// Default: left (Classic layout), right (Agentic layout)
     pub dock: Option<DockPosition>,
     /// Default width of the panel in pixels.
     ///
@@ -1182,7 +1182,7 @@ pub struct OutlinePanelSettingsContent {
     pub default_width: Option<PixelSetting>,
     /// The position of outline panel
     ///
-    /// Default: right (Agentic layout), left (Classic layout)
+    /// Default: left (Classic layout), right (Agentic layout)
     pub dock: Option<DockSide>,
     /// Whether to show file icons in the outline panel.
     ///
